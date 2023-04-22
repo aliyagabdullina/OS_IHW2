@@ -54,8 +54,11 @@ int read_data(struct shared_memory *shm, int sem_id) {
 // Функция для проверки булавки на кривизну
 void check_pin(struct shared_memory *shm, int sem_id) {
     int pin = read_data(shm, sem_id); // Чтение данных из разделяемой памяти
-    printf("Проверка булавки %d на кривизну\n", pin);
-    write_data(shm, pin, sem_id); // Запись данных в разделяемую память
+    if (pin % 2 == 0) {
+        printf("Булавка %d прямая\n", pin);
+    } else {
+        printf("Булавка %d кривая\n", pin);
+    }
 }
 
 // Функция для заточки булавки
@@ -67,8 +70,12 @@ void sharpen_pin(struct shared_memory *shm, int sem_id) {
 
 // Функция для контроля качества
 void quality_control(struct shared_memory *shm, int sem_id) {
-    int pin = read_data(shm, sem_id); // Чтение данных из разделяемой памяти
-    printf("Проверка качества булавки %d\n", pin);
+    int pin = read_data(shm, sem_id); // Чтение данных из памяти
+    if (pin % 2 == 0) {
+        printf("Булавка %d прошла контроль качества\n", pin);
+    } else {
+        printf("Булавка %d не прошла контроль качества\n", pin);
+    }
 }
 
 int main() {
