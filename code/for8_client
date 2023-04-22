@@ -1,0 +1,127 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/ipc.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
+#include <signal.h>
+
+#define SEM_KEY 0x1234
+#define SHM_KEY 0x5678
+#define BUFFER_SIZE 10
+
+typedef struct {
+    int produced; // кол-во произведенных булавок
+    int ready; // кол-во готовых булавок для отправки
+    int sent; // кол-во отправленных булавок
+} SharedData;
+
+typedef struct {
+    int id;
+    int semid;
+    SharedData* shared_data;
+} Client;
+
+int sem_wait(int semid, int sem_num) {
+    struct sembuf op;
+    op.sem_num = sem_num;
+    op.sem_op = -1;
+    op.sem_flg = 0;
+    return semop(semid, &op, 1);
+}
+
+int sem_signal(int semid, int sem_num) {
+    struct sembuf op;
+    op.sem_num = sem_num;
+    op.sem_op = 1;
+    op.sem_flg = 0;
+    return semop(semid, &op, 1);
+}
+
+void sigint_handler(int signum) {
+    exit(0);
+}
+
+int main() {
+    // Создание семафоров
+    int semid = semget(SEM_KEY, 2, IPC_CREAT | 0666);
+    if (semid == -1) {
+        perror("semget error");
+        exit(1);
+    }
+    
+    union semun {
+        int val;
+        struct semid_ds *buf;
+        unsigned short *array;
+    } arg;
+
+    arg.val = 1; // семафор 0 - для доступа к разделяемой памяти
+    if (semctl(semid, 0, 8, arg) == -1) {
+        perror("semctl error");
+        exit(1);
+    }
+
+    arg.val = 0; // семафор 1 - для ожидания готовых булавок
+    if (semctl(semid, 1, 8, arg) == -1) {
+        perror("semctl error");
+        exit(1);
+    }
+
+    // Создание разделяемой памяти
+    int shmid = shmget(SHM_KEY, sizeof(SharedData), IPC_CREAT | 0666);
+    if (shmid == -1) {
+        perror("shmget error");
+        exit(1);
+    }
+
+    // Присоединение разделяемой памяти
+    SharedData* shared_data = (SharedData*) shmat(shmid, NULL, 0);
+    if (shared_data == (SharedData*) -1) {
+        perror("shmat error");
+        exit(1);
+    }
+    
+    shared_data->produced = 0;
+    shared_data->ready = 0;
+    shared_data->sent = 0;
+
+    // Создание клиента
+    Client client;
+    client.id = getpid();
+    client.semid = semid;
+    client.shared_data = shared_data;
+
+    signal(SIGINT, sigint_handler);
+
+    // Основной цикл клиента
+    for (int i = 0; i < BUFFER_SIZE; ++i) {
+        sem_wait(semid, 0);
+
+        if (client.shared_data->sent >= client.shared_data->produced) {
+            // если все булавки отправлены
+            printf("Производитель %d: Все булавки были отправлены.\\n", client.id);
+            sem_signal(semid, 0);
+            sleep(1);
+            continue;
+        }
+
+        if (client.shared_data->ready > 0) {
+            // если есть готовые булавки
+            client.shared_data->sent++;
+            client.shared_data->ready--;
+            printf("Производитель %d: Отправил булавку. Отправлено: %d, Готово: %d\\n", client.id, client.shared_data->sent, client.shared_data->ready);
+            sem_signal(semid, 1);
+        } else {
+            // иначе ожидаем готовых булавок
+            printf("Потребитель %d: Ожидает булавки\\n", client.id);
+            sem_signal(semid, 0);
+            sem_wait(semid, 1);
+        }
+
+        sleep(1);
+    }
+
+    return 0;
+}
