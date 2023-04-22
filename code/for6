@@ -1,0 +1,137 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/ipc.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
+#include <string.h>
+#include <sys/mman.h>
+
+#define BUFFER_SIZE 10
+
+struct shared_memory {
+    int buffer[BUFFER_SIZE];
+    int in;
+    int out;
+};
+
+// Функция для уменьшения значения семафора на 1
+void sem_wait_my(int sem_id, int sem_num) {
+    struct sembuf sem_buf = {sem_num, -1, 0};
+    semop(sem_id, &sem_buf, 1);
+}
+
+// Функция для увеличения значения семафора на 1
+void sem_signal(int sem_id, int sem_num) {
+    struct sembuf sem_buf = {sem_num, 1, 0};
+    semop(sem_id, &sem_buf, 1);
+}
+
+// Функция для записи данных в разделяемую память
+void write_data(struct shared_memory *shm, int data, int sem_id) {
+    sem_wait_my(sem_id, 0);
+    sem_wait_my(sem_id, 2);
+    shm->buffer[shm->in] = data; // Запись данных
+    printf("Производитель записал булавку %d в буфер по индексу %d\n", data, shm->in);
+    shm->in = (shm->in + 1) % BUFFER_SIZE; // Обновление указателя на запись
+    sem_signal(sem_id, 1);
+    sem_signal(sem_id, 0);
+}
+
+// Функция для чтения данных из разделяемой памяти
+int read_data(struct shared_memory *shm, int sem_id) {
+    int data;
+    sem_wait_my(sem_id, 0); // Блокировка доступа к разделяемой памяти
+    sem_wait_my(sem_id, 1); // Ожидание данных для чтения
+    data = shm->buffer[shm->out]; // Чтение данных
+    printf("Потребитель прочитал булавку %d из буфера по индексу %d\n", data, shm->out);
+    shm->out = (shm->out + 1) % BUFFER_SIZE; // Обновление указателя на чтение
+    sem_signal(sem_id, 2); // Сигнализация о том, что есть место для записи
+    sem_signal(sem_id, 0); // Разблокировка доступа к разделяемой памяти
+    return data;
+}
+
+// Функция для проверки булавки на кривизну
+void check_pin(struct shared_memory *shm, int sem_id) {
+    int pin = read_data(shm, sem_id); // Чтение данных из разделяемой памяти
+    if (pin % 2 == 0) {
+        printf("Булавка %d прямая\n", pin);
+    } else {
+        printf("Булавка %d кривая\n", pin);
+    }
+}
+
+// Функция для заточки булавки
+void sharpen_pin(struct shared_memory *shm, int sem_id) {
+    int pin = read_data(shm, sem_id); // Чтение данных из разделяемой памяти
+    printf("Заточка булавки %d\n", pin);
+    pin++;
+    write_data(shm, pin, sem_id); // Запись обновленных данных в разделяемую память
+}
+
+// Функция для контроля качества булавки
+void quality_control(struct shared_memory *shm, int sem_id) {
+    int pin = read_data(shm, sem_id); // Чтение данных из разделяемой памяти
+    if (pin % 2 == 0) {
+        printf("Булавка %d прошла контроль качества\n", pin);
+    } else {
+        printf("Булавка %d не прошла контроль качества\n", pin);
+    }
+}
+
+int main() {
+    // Инициализация именованных семафоров и разделяемой памяти
+    int sem_id = semget(IPC_PRIVATE, 3, IPC_CREAT | 0666);
+    semctl(sem_id, 0, SETVAL, 1);
+    semctl(sem_id, 1, SETVAL, 0);
+    semctl(sem_id, 2, SETVAL, BUFFER_SIZE);
+    int shm_id = shmget(IPC_PRIVATE, sizeof(struct shared_memory), IPC_CREAT | 0666);
+    struct shared_memory *shm = shmat(shm_id, NULL, 0);
+
+    // Инициализация булавок
+    for (int i = 1; i <= BUFFER_SIZE; i++) {
+        write_data(shm, i, sem_id);
+    }
+
+    // Создание процессов
+    for (int i = 0; i < 3; i++) {
+        pid_t pid = fork();
+
+        if (pid == 0) {
+            switch (i) {
+                case 0:
+                    for (int j = 0; j < BUFFER_SIZE; j++) {
+                        check_pin(shm, sem_id);
+                    }
+                    break;
+                case 1:
+                    for (int j = 0; j < BUFFER_SIZE; j++) {
+                        sharpen_pin(shm, sem_id);
+                    }
+                    break;
+                case 2:
+                    for (int j = 0; j < BUFFER_SIZE; j++) {
+                        quality_control(shm, sem_id);
+                    }
+                    break;
+            }
+
+            exit(0);
+        }
+    }
+
+    // Ожидание завершения процессов
+    for (int i = 0; i < 3; i++) {
+        wait(NULL);
+    }
+
+    shmdt(shm);
+    shmctl(shm_id, 0, NULL);
+    semctl(sem_id, 0, 0);
+    semctl(sem_id, 1, 0);
+    semctl(sem_id, 2, 0);
+
+    return 0;
+}
+
