@@ -1,0 +1,127 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/sem.h>
+#include <sys/shm.h>
+
+#define BUFFER_SIZE 10
+
+struct shared_memory {
+    int buffer[BUFFER_SIZE];
+    int in;
+    int out;
+};
+
+// Функция для уменьшения значения семафора на 1
+void sem_wait(int sem_id, int sem_num) {
+    struct sembuf operation = {sem_num, -1, 010000};
+    semop(sem_id, &operation, 1);
+}
+
+// Функция для увеличения значения семафора на 1
+void sem_signal(int sem_id, int sem_num) {
+    struct sembuf operation = {sem_num, 1, 010000};
+    semop(sem_id, &operation, 1);
+}
+
+// Функция для записи данных в разделяемую память
+void write_data(struct shared_memory *shm, int data, int sem_id) {
+    sem_wait(sem_id, 0);
+    sem_wait(sem_id, 2);
+    shm->buffer[shm->in] = data; // Запись данных
+    printf("Производитель записал булавку %d в буфер по индексу %d\n", data, shm->in);
+    shm->in = (shm->in + 1) % BUFFER_SIZE;
+    sem_signal(sem_id, 1); // есть данные для чтения
+    sem_signal(sem_id, 0);
+}
+
+// Функция для чтения данных из разделяемой памяти
+int read_data(struct shared_memory *shm, int sem_id) {
+    int data;
+    sem_wait(sem_id, 0);
+    sem_wait(sem_id, 1);
+    data = shm->buffer[shm->out]; // Чтение данных
+    printf("Потребитель прочитал булавку %d из буфера по индексу %d\n", data, shm->out);
+    shm->out = (shm->out + 1) % BUFFER_SIZE; // Обновление указателя на чтение
+    sem_signal(sem_id, 2);
+    sem_signal(sem_id, 0);
+    return data;
+}
+
+// Функция для проверки булавки на кривизну
+void check_pin(struct shared_memory *shm, int sem_id) {
+    int pin = read_data(shm, sem_id); // Чтение данных из разделяемой памяти
+    printf("Проверка булавки %d на кривизну\n", pin);
+    write_data(shm, pin, sem_id); // Запись данных в разделяемую память
+}
+
+// Функция для заточки булавки
+void sharpen_pin(struct shared_memory *shm, int sem_id) {
+    int pin = read_data(shm, sem_id); // Чтение данных из разделяемой памяти
+    printf("Заточка булавки %d\n", pin);
+    write_data(shm, pin, sem_id); // Запись данных в разделяемую память
+}
+
+// Функция для контроля качества
+void quality_control(struct shared_memory *shm, int sem_id) {
+    int pin = read_data(shm, sem_id); // Чтение данных из разделяемой памяти
+    printf("Проверка качества булавки %d\n", pin);
+}
+
+int main() {
+    int sem_id = semget(((key_t)0), 3, 001000 | 0666);
+    int shm_id = shmget(((key_t)0), sizeof(struct shared_memory), 001000 | 0666);
+    struct shared_memory *shm = shmat(shm_id, NULL, 0);
+
+    semctl(sem_id, 0, 8, 1); // Семафор для доступа к разделяемой памяти
+    semctl(sem_id, 1, 8, 0); // Семафор для наличия данных для чтения
+    semctl(sem_id, 2, 8, BUFFER_SIZE); // Семафор для наличия места для записи
+
+    // Инициализация булавок
+    for (int i = 1; i <= BUFFER_SIZE; i++) {
+        write_data(shm, i, sem_id);
+    }
+
+    // Создание процессов
+    for (int i = 0; i < 3; i++) {
+        pid_t pid = fork();
+
+        if (pid == 0) {
+            switch (i) {
+                case 0:
+                    for (int j = 0; j < BUFFER_SIZE; j++) {
+                        check_pin(shm, sem_id);
+                    }
+                    break;
+                case 1:
+                    for (int j = 0; j < BUFFER_SIZE; j++) {
+                        sharpen_pin(shm, sem_id);
+                    }
+                    break;
+                case 2:
+                    for (int j = 0; j < BUFFER_SIZE; j++) {
+                        quality_control(shm, sem_id);
+                    }
+                    break;
+            }
+
+            exit(0);
+        }
+    }
+
+    // Ожидание завершения процессов
+    for (int i = 0; i < 3; i++) {
+        wait(NULL);
+    }
+
+    shmdt(shm);
+    shmctl(shm_id, 0, NULL);
+    semctl(sem_id, 0, 0, 0);
+    semctl(sem_id, 1, 0, 0);
+    semctl(sem_id, 2, 0, 0);
+
+    return 0;
+}
