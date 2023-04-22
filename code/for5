@@ -1,0 +1,140 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/sem.h>
+#include <fcntl.h>
+#include <string.h>
+#include <semaphore.h>
+#include <sys/mman.h>
+
+#define BUFFER_SIZE 10
+
+struct shared_memory {
+    int buffer[BUFFER_SIZE];
+    int in;
+    int out;
+};
+
+// Функция для уменьшения значения семафора на 1
+void sem_wait_my(sem_t *sem_id, int sem_num) {
+    sem_wait(&sem_id[sem_num]);
+}
+
+// Функция для увеличения значения семафора на 1
+void sem_signal(sem_t *sem_id, int sem_num) {
+    sem_post(&sem_id[sem_num]);
+}
+
+// Функция для записи данных в разделяемую память
+void write_data(struct shared_memory *shm, int data, sem_t *sem_id) {
+    sem_wait_my(sem_id, 0);
+    sem_wait_my(sem_id, 2);
+    shm->buffer[shm->in] = data; // Запись данных
+    printf("Производитель записал булавку %d в буфер по индексу %d\n", data, shm->in);
+    shm->in = (shm->in + 1) % BUFFER_SIZE; // Обновление указателя на запись
+    sem_signal(sem_id, 1);
+    sem_signal(sem_id, 0);
+}
+
+// Функция для чтения данных из разделяемой памяти
+int read_data(struct shared_memory *shm, sem_t *sem_id) {
+    int data;
+    sem_wait_my(sem_id, 0);
+    sem_wait_my(sem_id, 1);
+    data = shm->buffer[shm->out]; // Чтение данных
+    printf("Потребитель прочитал булавку %d из буфера по индексу %d\n", data, shm->out);
+    shm->out = (shm->out + 1) % BUFFER_SIZE; // Обновление указателя на чтение
+    sem_signal(sem_id, 2);
+    sem_signal(sem_id, 0);
+    return data;
+}
+
+// Функция для проверки булавки на кривизну
+void check_pin(struct shared_memory *shm, sem_t *sem_id) {
+    int pin = read_data(shm, sem_id); // Чтение данных из разделяемой памяти
+    if (pin % 2 == 0) {
+        printf("Булавка %d прямая\n", pin);
+    } else {
+        printf("Булавка %d кривая\n", pin);
+    }
+}
+
+// Функция для заточки булавки
+void sharpen_pin(struct shared_memory *shm, sem_t *sem_id) {
+    int pin = read_data(shm, sem_id); // Чтение данных из памяти
+    pin++;
+    write_data(shm, pin, sem_id); // Запись обновленных данных в память
+}
+
+// Функция для контроля качества булавки
+void quality_control(struct shared_memory *shm, sem_t *sem_id) {
+    int pin = read_data(shm, sem_id); // Чтение данных из памяти
+    if (pin % 2 == 0) {
+        printf("Булавка %d прошла контроль качества\n", pin);
+    } else {
+        printf("Булавка %d не прошла контроль качества\n", pin);
+    }
+}
+
+int main() {
+    sem_t *sem1_id = sem_open("sem1", O_CREAT, 0666, 1);
+    sem_t *sem2_id = sem_open("sem2", O_CREAT, 0666, 0);
+    sem_t *sem3_id = sem_open("sem3", O_CREAT, 0666, BUFFER_SIZE);
+    int shm_id = shm_open("shm", O_CREAT | O_RDWR, 0666);
+    ftruncate(shm_id, sizeof(struct shared_memory));
+    struct shared_memory *shm = mmap(NULL, sizeof(struct shared_memory), PROT_READ | PROT_WRITE, MAP_SHARED, shm_id, 0);
+
+    sem_init(sem1_id, 1, 0);
+    sem_init(sem2_id, 1, 0);
+    sem_init(sem3_id, 1, BUFFER_SIZE);
+
+    // Инициализация булавок
+    for (int i = 1; i <= BUFFER_SIZE; i++) {
+        write_data(shm, i, sem3_id);
+    }
+
+    // Создание процессов
+    for (int i = 0; i < 3; i++) {
+        pid_t pid = fork();
+
+        if (pid == 0) {
+            switch (i) {
+                case 0:
+                    for (int j = 0; j < BUFFER_SIZE; j++) {
+                        check_pin(shm, sem1_id);
+                    }
+                    break;
+                case 1:
+                    for (int j = 0; j < BUFFER_SIZE; j++) {
+                        sharpen_pin(shm, sem1_id);
+                    }
+                    break;
+                case 2:
+                    for (int j = 0; j < BUFFER_SIZE; j++) {
+                        quality_control(shm, sem1_id);
+                    }
+                    break;
+            }
+
+            exit(0);
+        }
+    }
+
+    // Ожидание завершения процессов
+    for (int i = 0; i < 3; i++) {
+        wait(NULL);
+    }
+
+    munmap(shm, sizeof(struct shared_memory));
+    close(shm_id);
+    shm_unlink("shm");
+    sem_close(sem1_id);
+    sem_close(sem2_id);
+    sem_close(sem3_id);
+    sem_unlink("sem1");
+    sem_unlink("sem2");
+    sem_unlink("sem3");
+
+    return 0;
+}
