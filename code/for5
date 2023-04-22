@@ -63,6 +63,7 @@ void check_pin(struct shared_memory *shm, sem_t *sem_id) {
 // Функция для заточки булавки
 void sharpen_pin(struct shared_memory *shm, sem_t *sem_id) {
     int pin = read_data(shm, sem_id); // Чтение данных из памяти
+    printf("Заточка булавки %d\n", pin);
     pin++;
     write_data(shm, pin, sem_id); // Запись обновленных данных в память
 }
